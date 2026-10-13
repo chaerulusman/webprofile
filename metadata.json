@@ -2,5 +2,7 @@
   "name": "PT Anonim - Corporate Profile",
   "description": "Website resmi profil perusahaan PT Anonim - Solusi Transformasi Digital, Konsultasi Teknologi, dan Inovasi Bisnis Terpercaya di Indonesia.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

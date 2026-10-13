@@ -24,6 +24,8 @@ import {
   FAQItem, 
   Testimonial 
 } from '../types';
+import { auth, googleAuthProvider } from '../lib/firebase.ts';
+import { signInWithPopup, signOut } from 'firebase/auth';
 
 export interface InboundQuote {
   id: string;
@@ -94,7 +96,9 @@ interface CompanyContextType {
   // Super Admin state
   isAdminLoggedIn: boolean;
   adminUser: SuperAdminUser | null;
+  authToken: string | null;
   loginAdmin: (email: string, pass: string) => boolean;
+  loginWithGoogle: () => Promise<boolean>;
   logoutAdmin: () => void;
   
   // Inbound submissions (Leads & Candidates)
@@ -348,6 +352,8 @@ export const CompanyProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [isAdminLoggedIn, adminUser]);
 
   // Auth Methods
+  const [authToken, setAuthToken] = useState<string | null>(null);
+
   const loginAdmin = (email: string, pass: string): boolean => {
     // Default Super Admin credentials
     const validEmail = 'admin@anonim.co.id';
@@ -362,7 +368,7 @@ export const CompanyProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const user: SuperAdminUser = {
         id: 'SA-001',
         name: 'Super Administrator PT Anonim',
-        email: 'admin@anonim.co.id',
+        email: cleanInputEmail === 'chaerulusman166@gmail.com' ? 'chaerulusman166@gmail.com' : 'admin@anonim.co.id',
         role: 'SUPER_ADMIN',
         avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
         lastLogin: new Date().toLocaleDateString('id-ID', { 
@@ -380,20 +386,87 @@ export const CompanyProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return false;
   };
 
-  const logoutAdmin = () => {
+  const loginWithGoogle = async (): Promise<boolean> => {
+    try {
+      const cred = await signInWithPopup(auth, googleAuthProvider);
+      const token = await cred.user.getIdToken();
+      setAuthToken(token);
+
+      // Secure backend sync to Cloud SQL users table
+      try {
+        await fetch('/api/auth/sync-user', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          }
+        });
+      } catch (err) {
+        console.warn('Backend Cloud SQL user sync failed, continuing session:', err);
+      }
+
+      const user: SuperAdminUser = {
+        id: cred.user.uid,
+        name: cred.user.displayName || 'Administrator PT Anonim',
+        email: cred.user.email || 'chaerulusman166@gmail.com',
+        role: 'SUPER_ADMIN',
+        avatar: cred.user.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
+        lastLogin: new Date().toLocaleDateString('id-ID', { 
+          day: 'numeric', 
+          month: 'long', 
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+      };
+      setAdminUser(user);
+      setIsAdminLoggedIn(true);
+      return true;
+    } catch (error) {
+      console.error('Google Sign-In failed:', error);
+      return false;
+    }
+  };
+
+  const logoutAdmin = async () => {
+    try {
+      await signOut(auth);
+    } catch {
+      // Ignore client signout error
+    }
+    setAuthToken(null);
     setIsAdminLoggedIn(false);
     setAdminUser(null);
   };
 
-  // Inbound Methods
+  // Inbound Methods (Persisted locally + Synced to Cloud SQL)
   const addInboundQuote = (quote: Omit<InboundQuote, 'id' | 'submittedAt' | 'status'>) => {
+    const quoteCode = `ANO-RFP-2026-${Math.floor(1000 + Math.random() * 9000)}`;
     const newQuote: InboundQuote = {
       ...quote,
-      id: `RFP-${Date.now().toString().slice(-5)}`,
+      id: quoteCode,
       submittedAt: 'Baru Saja',
       status: 'Baru'
     };
     setInboundQuotes(prev => [newQuote, ...prev]);
+
+    // Async sync to Cloud SQL PostgreSQL
+    fetch('/api/quotes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        quoteCode: newQuote.id,
+        name: newQuote.name,
+        company: newQuote.company,
+        email: newQuote.email,
+        phone: newQuote.phone,
+        serviceId: newQuote.serviceId,
+        budgetRange: newQuote.budgetRange,
+        targetTimeline: newQuote.targetTimeline,
+        projectScope: newQuote.projectScope,
+        hasNda: newQuote.hasNda,
+      })
+    }).catch(err => console.error('Cloud SQL quote persistence error:', err));
   };
 
   const addInboundApplication = (app: Omit<InboundApplication, 'id' | 'submittedAt' | 'status'>) => {
@@ -404,6 +477,24 @@ export const CompanyProvider: React.FC<{ children: React.ReactNode }> = ({ child
       status: 'Screening'
     };
     setInboundApplications(prev => [newApp, ...prev]);
+
+    // Async sync to Cloud SQL PostgreSQL
+    fetch('/api/applications', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobId: newApp.jobId,
+        jobTitle: newApp.jobTitle,
+        fullName: newApp.fullName,
+        email: newApp.email,
+        phone: newApp.phone,
+        yearsExp: newApp.yearsExp,
+        linkedinUrl: newApp.linkedinUrl,
+        portfolioUrl: newApp.portfolioUrl,
+        fileName: newApp.fileName,
+        coverLetter: newApp.coverLetter,
+      })
+    }).catch(err => console.error('Cloud SQL application persistence error:', err));
   };
 
   const addInboundMessage = (msg: Omit<InboundMessage, 'id' | 'submittedAt' | 'status'>) => {
@@ -414,6 +505,20 @@ export const CompanyProvider: React.FC<{ children: React.ReactNode }> = ({ child
       status: 'Belum Dibaca'
     };
     setInboundMessages(prev => [newMsg, ...prev]);
+
+    // Async sync to Cloud SQL PostgreSQL
+    fetch('/api/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: newMsg.name,
+        email: newMsg.email,
+        phone: newMsg.phone,
+        company: newMsg.company,
+        topic: newMsg.topic,
+        message: newMsg.message,
+      })
+    }).catch(err => console.error('Cloud SQL message persistence error:', err));
   };
 
   const updateQuoteStatus = (id: string, status: InboundQuote['status']) => {
@@ -431,6 +536,11 @@ export const CompanyProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Company Info CRUD
   const updateCompanyInfo = (newInfo: Partial<typeof COMPANY_INFO>) => {
     setCompanyInfo(prev => ({ ...prev, ...newInfo }));
+    fetch('/api/company-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newInfo)
+    }).catch(err => console.error('Cloud SQL company settings sync error:', err));
   };
 
   // Services CRUD
@@ -548,7 +658,9 @@ export const CompanyProvider: React.FC<{ children: React.ReactNode }> = ({ child
       testimonials,
       isAdminLoggedIn,
       adminUser,
+      authToken,
       loginAdmin,
+      loginWithGoogle,
       logoutAdmin,
       inboundQuotes,
       inboundApplications,
